@@ -3210,6 +3210,15 @@ def client(original_function):
             # MODEL CALL
             result = original_function(*args, **kwargs)
             end_time = datetime.datetime.now()
+            if (
+                isinstance(result, ModelResponse)
+                or isinstance(result, EmbeddingResponse)
+                or isinstance(result, TranscriptionResponse)
+            ):
+                result._response_ms = (
+                    end_time - start_time
+                ).total_seconds() * 1000  # return response latency in ms like openai
+
             if "stream" in kwargs and kwargs["stream"] == True:
                 if (
                     "complete_response" in kwargs
@@ -3257,9 +3266,6 @@ def client(original_function):
                     model=model,
                     optional_params=getattr(logging_obj, "optional_params", {}),
                 )
-            result._response_ms = (
-                end_time - start_time
-            ).total_seconds() * 1000  # return response latency in ms like openai
             return result
         except Exception as e:
             call_type = original_function.__name__
@@ -3630,6 +3636,15 @@ def client(original_function):
             # MODEL CALL
             result = await original_function(*args, **kwargs)
             end_time = datetime.datetime.now()
+            if (
+                isinstance(result, ModelResponse)
+                or isinstance(result, EmbeddingResponse)
+                or isinstance(result, TranscriptionResponse)
+            ):
+                result._response_ms = (
+                    end_time - start_time
+                ).total_seconds() * 1000  # return response latency in ms like openai
+
             if "stream" in kwargs and kwargs["stream"] == True:
                 if (
                     "complete_response" in kwargs
@@ -3653,14 +3668,6 @@ def client(original_function):
                     model=model,
                     optional_params=kwargs,
                 )
-            if (
-                isinstance(result, ModelResponse)
-                or isinstance(result, EmbeddingResponse)
-                or isinstance(result, TranscriptionResponse)
-            ):
-                result._response_ms = (
-                    end_time - start_time
-                ).total_seconds() * 1000  # return response latency in ms like openai
 
             ### POST-CALL RULES ###
             post_call_processing(original_response=result, model=model)
