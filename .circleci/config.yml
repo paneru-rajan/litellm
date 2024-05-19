@@ -329,8 +329,8 @@ jobs:
             git config user.name "CircleCI"
             git config user.email "circleci@example.com"
             git add model_prices_and_context_window.json
-            git commit -m "Daily Price and Context window update: $(date +'%Y-%m-%d')"
-            git push origin main
+            git commit -m "[skip ci] Daily Price and Context window update: $(date +'%Y-%m-%d')"
+            git push -q origin main
     schedule:
       - cron: "0 0 * * *"
 workflows:
@@ -366,5 +366,3 @@ workflows:
   daily_update_price_and_context_window:
     jobs:
       - auto_update_price_and_context_window
-    environment:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
