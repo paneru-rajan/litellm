@@ -59,7 +59,7 @@ import {
   XCircleIcon,
   QuestionMarkCircleIcon,
 } from "@heroicons/react/outline";
-import StaticGenerationSearchParamsBailoutProvider from "next/dist/client/components/static-generation-searchparams-bailout-provider";
+
 import AddFallbacks from "./add_fallbacks";
 import openai from "openai";
 import Paragraph from "antd/es/skeleton/Paragraph";
@@ -76,6 +76,9 @@ async function testFallbackModelResponse(
 ) {
   // base url should be the current base_url
   const isLocal = process.env.NODE_ENV === "development";
+  if (isLocal != true) {
+    console.log = function() {};
+  }
   console.log("isLocal:", isLocal);
   const proxyBaseUrl = isLocal
     ? "http://localhost:4000"
@@ -250,6 +253,10 @@ const GeneralSettings: React.FC<GeneralSettingsPageProps> = ({
     getCallbacksCall(accessToken, userID, userRole).then((data) => {
       console.log("callbacks", data);
       let router_settings = data.router_settings;
+      // remove "model_group_retry_policy" from general_settings if exists
+      if ("model_group_retry_policy" in router_settings) {
+        delete router_settings["model_group_retry_policy"];
+      }
       setRouterSettings(router_settings);
     });
     getGeneralSettingsCall(accessToken).then((data) => {
@@ -280,22 +287,28 @@ const GeneralSettings: React.FC<GeneralSettingsPageProps> = ({
     console.log(`received key: ${key}`);
     console.log(`routerSettings['fallbacks']: ${routerSettings["fallbacks"]}`);
 
-    routerSettings["fallbacks"].map((dict: { [key: string]: any }) => {
-      // Check if the dictionary has the specified key and delete it if present
-      if (key in dict) {
-        delete dict[key];
-      }
-      return dict; // Return the updated dictionary
-    });
+    const updatedFallbacks = routerSettings["fallbacks"]
+        .map((dict: { [key: string]: any }) => {
+            if (key in dict) {
+                delete dict[key];
+            }
+            return dict;
+        })
+        .filter((dict: { [key: string]: any }) => Object.keys(dict).length > 0);
+      
+    const updatedSettings = {
+        ...routerSettings,
+        fallbacks: updatedFallbacks
+    };
+  
 
     const payload = {
-      router_settings: routerSettings,
+      router_settings: updatedSettings,
     };
 
     try {
       await setCallbacksCall(accessToken, payload);
-      setRouterSettings({ ...routerSettings });
-      setSelectedStrategy(routerSettings["routing_strategy"]);
+      setRouterSettings(updatedSettings);
       message.success("Router settings updated successfully");
     } catch (error) {
       message.error("Failed to update router settings: " + error, 20);
@@ -590,7 +603,7 @@ const GeneralSettings: React.FC<GeneralSettingsPageProps> = ({
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {generalSettings.map((value, index) => (
+                  {generalSettings.filter((value) => value.field_type !== "TypedDictionary").map((value, index) => (
                     <TableRow key={index}>
                       <TableCell>
                         <Text>{value.field_name}</Text>

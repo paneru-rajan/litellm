@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from "react";
 import BudgetSettings from "./budget_settings";
 import BudgetModal from "./budget_modal";
+import EditBudgetModal from "./edit_budget_modal";
 import {
   Table,
   TableBody,
@@ -43,15 +44,18 @@ interface BudgetSettingsPageProps {
   accessToken: string | null;
 }
 
-interface budgetItem {
+export interface budgetItem {
   budget_id: string;
   max_budget: string | null;
   rpm_limit: number | null;
   tpm_limit: number | null;
+  updated_at: string;
 }
 
 const BudgetPanel: React.FC<BudgetSettingsPageProps> = ({ accessToken }) => {
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [selectedBudget, setSelectedBudget] = useState<budgetItem | null>(null);
   const [budgetList, setBudgetList] = useState<budgetItem[]>([]);
   useEffect(() => {
     if (!accessToken) {
@@ -62,6 +66,19 @@ const BudgetPanel: React.FC<BudgetSettingsPageProps> = ({ accessToken }) => {
     });
   }, [accessToken]);
 
+  const handleEditCall = async (budget_id: string, index: number) => {
+    console.log("budget_id", budget_id)
+    if (accessToken == null) {
+      return;
+    }
+    // Find the budget first
+    const budget = budgetList.find(budget => budget.budget_id === budget_id) || null;
+    
+    // Update state and show modal after state is updated
+    setSelectedBudget(budget);
+    setIsEditModalVisible(true);
+  };
+  
   const handleDeleteCall = async (budget_id: string, index: number) => {
     if (accessToken == null) {
       return;
@@ -77,6 +94,15 @@ const BudgetPanel: React.FC<BudgetSettingsPageProps> = ({ accessToken }) => {
 
     message.success("Budget Deleted.");
   };
+
+  const handleUpdateCall = async () => {
+    if (accessToken == null) {
+      return;
+    }
+    getBudgetList(accessToken).then((data) => {
+      setBudgetList(data);
+    });
+  }
 
   return (
     <div className="w-full mx-auto flex-auto overflow-y-auto m-8 p-2">
@@ -94,6 +120,16 @@ const BudgetPanel: React.FC<BudgetSettingsPageProps> = ({ accessToken }) => {
         setIsModalVisible={setIsModalVisible}
         setBudgetList={setBudgetList}
       />
+      {
+        selectedBudget && <EditBudgetModal
+          accessToken={accessToken}
+          isModalVisible={isEditModalVisible}
+          setIsModalVisible={setIsEditModalVisible}
+          setBudgetList={setBudgetList}
+          existingBudget={selectedBudget}
+          handleUpdateCall={handleUpdateCall}
+        />
+      }
       <Card>
         <Text>Create a budget to assign to customers.</Text>
         <Table>
@@ -107,25 +143,27 @@ const BudgetPanel: React.FC<BudgetSettingsPageProps> = ({ accessToken }) => {
           </TableHead>
 
           <TableBody>
-            {budgetList.map((value: budgetItem, index: number) => (
-              <TableRow key={index}>
-                <TableCell>{value.budget_id}</TableCell>
-                <TableCell>
-                  {value.max_budget ? value.max_budget : "n/a"}
-                </TableCell>
-                <TableCell>
-                  {value.tpm_limit ? value.tpm_limit : "n/a"}
-                </TableCell>
-                <TableCell>
-                  {value.rpm_limit ? value.rpm_limit : "n/a"}
-                </TableCell>
-                <Icon
-                  icon={TrashIcon}
-                  size="sm"
-                  onClick={() => handleDeleteCall(value.budget_id, index)}
-                />
-              </TableRow>
-            ))}
+            {budgetList
+              .slice() // Creates a shallow copy to avoid mutating the original array
+              .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()) // Sort by updated_at in descending order
+              .map((value: budgetItem, index: number) => (
+                <TableRow key={index}>
+                  <TableCell>{value.budget_id}</TableCell>
+                  <TableCell>{value.max_budget ? value.max_budget : "n/a"}</TableCell>
+                  <TableCell>{value.tpm_limit ? value.tpm_limit : "n/a"}</TableCell>
+                  <TableCell>{value.rpm_limit ? value.rpm_limit : "n/a"}</TableCell>
+                  <Icon
+                    icon={PencilAltIcon}
+                    size="sm"
+                    onClick={() => handleEditCall(value.budget_id, index)}
+                  />
+                  <Icon
+                    icon={TrashIcon}
+                    size="sm"
+                    onClick={() => handleDeleteCall(value.budget_id, index)}
+                  />
+                </TableRow>
+              ))}
           </TableBody>
         </Table>
       </Card>
@@ -175,7 +213,7 @@ curl -X POST --location '<your_proxy_base_url>/chat/completions' \
               <SyntaxHighlighter language="python">
                 {`from openai import OpenAI
 client = OpenAI(
-  base_url="<your_proxy_base_url",
+  base_url="<your_proxy_base_url>",
   api_key="<your_proxy_key>"
 )
 

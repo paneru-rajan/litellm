@@ -1,3 +1,6 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # Perplexity AI (pplx-api)
 https://www.perplexity.ai
 
@@ -38,7 +41,7 @@ for chunk in response:
 
 
 ## Supported Models
-All models listed here https://docs.perplexity.ai/docs/model-cards are supported
+All models listed here https://docs.perplexity.ai/docs/model-cards are supported.  Just do `model=perplexity/<model-name>`.
 
 | Model Name               | Function Call                                                                                                                                                      |
 |--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -60,3 +63,8 @@ All models listed here https://docs.perplexity.ai/docs/model-cards are supported
 
 
 
+
+:::info
+
+For more information about passing provider-specific parameters, [go here](../completion/provider_specific_params.md)
+:::

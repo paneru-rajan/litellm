@@ -2,11 +2,11 @@ import Image from '@theme/IdealImage';
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# 🙋‍♂️ Customers 
+# 🙋‍♂️ Customers / End-User Budgets
 
 Track spend, set budgets for your customers.
 
-## Tracking Customer Credit
+## Tracking Customer Spend
 
 ### 1. Make LLM API call w/ Customer ID
 
@@ -231,7 +231,7 @@ curl -X POST 'http://localhost:4000/customer/new' \
 ```python
 from openai import OpenAI
 client = OpenAI(
-  base_url="<your_proxy_base_url",
+  base_url="<your_proxy_base_url>",
   api_key="<your_proxy_key>"
 )
 

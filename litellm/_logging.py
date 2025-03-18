@@ -1,20 +1,42 @@
-import logging, os, json
+import json
+import logging
+import os
+from datetime import datetime
 from logging import Formatter
 
 set_verbose = False
+
+if set_verbose is True:
+    logging.warning(
+        "`litellm.set_verbose` is deprecated. Please set `os.environ['LITELLM_LOG'] = 'DEBUG'` for debug logs."
+    )
 json_logs = bool(os.getenv("JSON_LOGS", False))
 # Create a handler for the logger (you may need to adapt this based on your needs)
+log_level = os.getenv("LITELLM_LOG", "DEBUG")
+numeric_level: str = getattr(logging, log_level.upper())
 handler = logging.StreamHandler()
-handler.setLevel(logging.DEBUG)
+handler.setLevel(numeric_level)
 
 
 class JsonFormatter(Formatter):
     def __init__(self):
         super(JsonFormatter, self).__init__()
 
+    def formatTime(self, record, datefmt=None):
+        # Use datetime to format the timestamp in ISO 8601 format
+        dt = datetime.fromtimestamp(record.created)
+        return dt.isoformat()
+
     def format(self, record):
-        json_record = {}
-        json_record["message"] = record.getMessage()
+        json_record = {
+            "message": record.getMessage(),
+            "level": record.levelname,
+            "timestamp": self.formatTime(record),
+        }
+
+        if record.exc_info:
+            json_record["stacktrace"] = self.formatException(record.exc_info)
+
         return json.dumps(json_record)
 
 
@@ -78,5 +100,14 @@ def print_verbose(print_statement):
     try:
         if set_verbose:
             print(print_statement)  # noqa
-    except:
+    except Exception:
         pass
+
+
+def _is_debugging_on() -> bool:
+    """
+    Returns True if debugging is on
+    """
+    if verbose_logger.isEnabledFor(logging.DEBUG) or set_verbose is True:
+        return True
+    return False

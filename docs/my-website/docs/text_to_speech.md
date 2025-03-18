@@ -1,6 +1,7 @@
 # Text to Speech
 
-## Quick Start 
+## **LiteLLM Python SDK Usage**
+### Quick Start 
 
 ```python
 from pathlib import Path
@@ -14,19 +15,11 @@ response = speech(
         model="openai/tts-1",
         voice="alloy",
         input="the quick brown fox jumped over the lazy dogs",
-        api_base=None,
-        api_key=None,
-        organization=None,
-        project=None,
-        max_retries=1,
-        timeout=600,
-        client=None,
-        optional_params={},
     )
 response.stream_to_file(speech_file_path)
 ```
 
-## Async Usage 
+### Async Usage 
 
 ```python
 from litellm import aspeech
@@ -55,7 +48,7 @@ async def test_async_speech():
 asyncio.run(test_async_speech())
 ```
 
-## Proxy Usage 
+## **LiteLLM Proxy Usage**
 
 LiteLLM provides an openai-compatible `/audio/speech` endpoint for Text-to-speech calls.
 
@@ -84,4 +77,40 @@ curl http://0.0.0.0:4000/v1/audio/speech \
 litellm --config /path/to/config.yaml
 
 # RUNNING on http://0.0.0.0:4000
+```
+## **Supported Providers**
+
+| Provider    | Link to Usage      |
+|-------------|--------------------|
+| OpenAI      |   [Usage](#quick-start)                 |
+| Azure OpenAI|   [Usage](../docs/providers/azure#azure-text-to-speech-tts)                 |
+| Vertex AI   |   [Usage](../docs/providers/vertex#text-to-speech-apis)                 |
+
+## ✨ Enterprise LiteLLM Proxy - Set Max Request File Size 
+
+Use this when you want to limit the file size for requests sent to `audio/transcriptions`
+
+```yaml
+- model_name: whisper
+  litellm_params:
+    model: whisper-1
+    api_key: sk-*******
+    max_file_size_mb: 0.00001 # 👈 max file size in MB  (Set this intentionally very small for testing)
+  model_info:
+    mode: audio_transcription
+```
+
+Make a test Request with a valid file
+```shell
+curl --location 'http://localhost:4000/v1/audio/transcriptions' \
+--header 'Authorization: Bearer sk-1234' \
+--form 'file=@"/Users/ishaanjaffer/Github/litellm/tests/gettysburg.wav"' \
+--form 'model="whisper"'
+```
+
+
+Expect to see the follow response 
+
+```shell
+{"error":{"message":"File size is too large. Please check your file size. Passed file size: 0.7392807006835938 MB. Max file size: 0.0001 MB","type":"bad_request","param":"file","code":500}}%  
 ```

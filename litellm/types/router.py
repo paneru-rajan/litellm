@@ -2,14 +2,33 @@
 litellm.Router Types - includes RouterConfig, UpdateRouterConfig, ModelInfo etc
 """
 
-from typing import List, Optional, Union, Dict, Tuple, Literal, TypedDict
-import uuid
-import enum
-import httpx
-from pydantic import BaseModel, ConfigDict, Field
 import datetime
+import enum
+import uuid
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, get_type_hints
+
+import httpx
+from httpx import AsyncClient, Client
+from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
+from pydantic import BaseModel, ConfigDict, Field
+from typing_extensions import Required, TypedDict
+
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+
+from ..exceptions import RateLimitError
 from .completion import CompletionRequest
 from .embedding import EmbeddingRequest
+from .llms.vertex_ai import VERTEX_CREDENTIALS_TYPES
+from .utils import ModelResponse, ProviderSpecificModelInfo
+
+
+class ConfigurableClientsideParamsCustomAuth(TypedDict):
+    api_base: str
+
+
+CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS = Optional[
+    List[Union[str, ConfigurableClientsideParamsCustomAuth]]
+]
 
 
 class ModelConfig(BaseModel):
@@ -88,6 +107,16 @@ class ModelInfo(BaseModel):
     base_model: Optional[str] = (
         None  # specify if the base model is azure/gpt-3.5-turbo etc for accurate cost tracking
     )
+    tier: Optional[Literal["free", "paid"]] = None
+
+    """
+    Team Model Specific Fields
+    """
+    # the team id that this model belongs to
+    team_id: Optional[str] = None
+
+    # the model_name that can be used by the team when making LLM calls
+    team_public_model_name: Optional[str] = None
 
     def __init__(self, id: Optional[Union[str, int]] = None, **params):
         if id is None:
@@ -115,7 +144,26 @@ class ModelInfo(BaseModel):
         setattr(self, key, value)
 
 
-class GenericLiteLLMParams(BaseModel):
+class CredentialLiteLLMParams(BaseModel):
+    api_key: Optional[str] = None
+    api_base: Optional[str] = None
+    api_version: Optional[str] = None
+    ## VERTEX AI ##
+    vertex_project: Optional[str] = None
+    vertex_location: Optional[str] = None
+    vertex_credentials: Optional[Union[str, dict]] = None
+    ## UNIFIED PROJECT/REGION ##
+    region_name: Optional[str] = None
+
+    ## AWS BEDROCK / SAGEMAKER ##
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    aws_region_name: Optional[str] = None
+    ## IBM WATSONX ##
+    watsonx_region_name: Optional[str] = None
+
+
+class GenericLiteLLMParams(CredentialLiteLLMParams):
     """
     LiteLLM Params without 'model' arg (used across completion / assistants api)
     """
@@ -123,9 +171,6 @@ class GenericLiteLLMParams(BaseModel):
     custom_llm_provider: Optional[str] = None
     tpm: Optional[int] = None
     rpm: Optional[int] = None
-    api_key: Optional[str] = None
-    api_base: Optional[str] = None
-    api_version: Optional[str] = None
     timeout: Optional[Union[float, str, httpx.Timeout]] = (
         None  # if str, pass in as os.environ/
     )
@@ -134,24 +179,26 @@ class GenericLiteLLMParams(BaseModel):
     )
     max_retries: Optional[int] = None
     organization: Optional[str] = None  # for openai orgs
-    ## UNIFIED PROJECT/REGION ##
-    region_name: Optional[str] = None
-    ## VERTEX AI ##
-    vertex_project: Optional[str] = None
-    vertex_location: Optional[str] = None
-    ## AWS BEDROCK / SAGEMAKER ##
-    aws_access_key_id: Optional[str] = None
-    aws_secret_access_key: Optional[str] = None
-    aws_region_name: Optional[str] = None
-    ## IBM WATSONX ##
-    watsonx_region_name: Optional[str] = None
+    configurable_clientside_auth_params: CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS = None
+
+    ## LOGGING PARAMS ##
+    litellm_trace_id: Optional[str] = None
+
     ## CUSTOM PRICING ##
     input_cost_per_token: Optional[float] = None
     output_cost_per_token: Optional[float] = None
     input_cost_per_second: Optional[float] = None
     output_cost_per_second: Optional[float] = None
 
+    max_file_size_mb: Optional[float] = None
+
+    # Deployment budgets
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    use_in_pass_through: Optional[bool] = False
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+    merge_reasoning_content_in_choices: Optional[bool] = False
+    model_info: Optional[Dict] = None
 
     def __init__(
         self,
@@ -167,11 +214,14 @@ class GenericLiteLLMParams(BaseModel):
             None  # timeout when making stream=True calls, if str, pass in as os.environ/
         ),
         organization: Optional[str] = None,  # for openai orgs
+        ## LOGGING PARAMS ##
+        litellm_trace_id: Optional[str] = None,
         ## UNIFIED PROJECT/REGION ##
         region_name: Optional[str] = None,
         ## VERTEX AI ##
         vertex_project: Optional[str] = None,
         vertex_location: Optional[str] = None,
+        vertex_credentials: Optional[VERTEX_CREDENTIALS_TYPES] = None,
         ## AWS BEDROCK / SAGEMAKER ##
         aws_access_key_id: Optional[str] = None,
         aws_secret_access_key: Optional[str] = None,
@@ -182,6 +232,15 @@ class GenericLiteLLMParams(BaseModel):
         output_cost_per_token: Optional[float] = None,
         input_cost_per_second: Optional[float] = None,
         output_cost_per_second: Optional[float] = None,
+        max_file_size_mb: Optional[float] = None,
+        # Deployment budgets
+        max_budget: Optional[float] = None,
+        budget_duration: Optional[str] = None,
+        # Pass through params
+        use_in_pass_through: Optional[bool] = False,
+        # This will merge the reasoning content in the choices
+        merge_reasoning_content_in_choices: Optional[bool] = False,
+        model_info: Optional[Dict] = None,
         **params,
     ):
         args = locals()
@@ -191,7 +250,11 @@ class GenericLiteLLMParams(BaseModel):
         args.pop("__class__", None)
         if max_retries is not None and isinstance(max_retries, str):
             max_retries = int(max_retries)  # cast to int
-        super().__init__(max_retries=max_retries, **args, **params)
+        # We need to keep max_retries in args since it's a parameter of GenericLiteLLMParams
+        args["max_retries"] = (
+            max_retries  # Put max_retries back in args after popping it
+        )
+        super().__init__(**args, **params)
 
     def __contains__(self, key):
         # Define custom behavior for the 'in' operator
@@ -240,6 +303,11 @@ class LiteLLM_Params(GenericLiteLLMParams):
         aws_access_key_id: Optional[str] = None,
         aws_secret_access_key: Optional[str] = None,
         aws_region_name: Optional[str] = None,
+        # OpenAI / Azure Whisper
+        # set a max-size of file that can be passed to litellm proxy
+        max_file_size_mb: Optional[float] = None,
+        # will use deployment on pass-through endpoints if True
+        use_in_pass_through: Optional[bool] = False,
         **params,
     ):
         args = locals()
@@ -287,13 +355,17 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     custom_llm_provider: Optional[str]
     tpm: Optional[int]
     rpm: Optional[int]
+    order: Optional[int]
+    weight: Optional[int]
+    max_parallel_requests: Optional[int]
     api_key: Optional[str]
     api_base: Optional[str]
     api_version: Optional[str]
     timeout: Optional[Union[float, str, httpx.Timeout]]
     stream_timeout: Optional[Union[float, str]]
     max_retries: Optional[int]
-    organization: Optional[str]  # for openai orgs
+    organization: Optional[Union[List, str]]  # for openai orgs
+    configurable_clientside_auth_params: CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS  # for allowing api base switching on finetuned models
     ## DROP PARAMS ##
     drop_params: Optional[bool]
     ## UNIFIED PROJECT/REGION ##
@@ -312,13 +384,31 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     output_cost_per_token: Optional[float]
     input_cost_per_second: Optional[float]
     output_cost_per_second: Optional[float]
+    num_retries: Optional[int]
     ## MOCK RESPONSES ##
-    mock_response: Optional[str]
+    mock_response: Optional[Union[str, ModelResponse, Exception]]
+
+    # routing params
+    # use this for tag-based routing
+    tags: Optional[List[str]]
+
+    # deployment budgets
+    max_budget: Optional[float]
+    budget_duration: Optional[str]
 
 
-class DeploymentTypedDict(TypedDict):
-    model_name: str
-    litellm_params: LiteLLMParamsTypedDict
+class DeploymentTypedDict(TypedDict, total=False):
+    model_name: Required[str]
+    litellm_params: Required[LiteLLMParamsTypedDict]
+    model_info: dict
+
+
+SPECIAL_MODEL_INFO_PARAMS = [
+    "input_cost_per_token",
+    "output_cost_per_token",
+    "input_cost_per_character",
+    "output_cost_per_character",
+]
 
 
 class Deployment(BaseModel):
@@ -339,6 +429,16 @@ class Deployment(BaseModel):
             model_info = ModelInfo()
         elif isinstance(model_info, dict):
             model_info = ModelInfo(**model_info)
+
+        for (
+            key
+        ) in (
+            SPECIAL_MODEL_INFO_PARAMS
+        ):  # ensures custom pricing info is consistently in 'model_info'
+            field = getattr(litellm_params, key, None)
+            if field is not None:
+                setattr(model_info, key, field)
+
         super().__init__(
             model_info=model_info,
             model_name=model_name,
@@ -377,6 +477,12 @@ class RouterErrors(enum.Enum):
 
     user_defined_ratelimit_error = "Deployment over user-defined ratelimit."
     no_deployments_available = "No deployments available for selected model"
+    no_deployments_with_tag_routing = (
+        "Not allowed to access model due to tags configuration"
+    )
+    no_deployments_with_provider_budget_routing = (
+        "No deployments available - crossed budget"
+    )
 
 
 class AllowedFailsPolicy(BaseModel):
@@ -435,15 +541,167 @@ class ModelGroupInfo(BaseModel):
     max_output_tokens: Optional[float] = None
     input_cost_per_token: Optional[float] = None
     output_cost_per_token: Optional[float] = None
-    mode: Literal[
-        "chat", "embedding", "completion", "image_generation", "audio_transcription"
-    ]
+    mode: Optional[
+        Union[
+            str,
+            Literal[
+                "chat",
+                "embedding",
+                "completion",
+                "image_generation",
+                "audio_transcription",
+                "rerank",
+                "moderations",
+            ],
+        ]
+    ] = Field(default="chat")
+    tpm: Optional[int] = None
+    rpm: Optional[int] = None
     supports_parallel_function_calling: bool = Field(default=False)
     supports_vision: bool = Field(default=False)
     supports_function_calling: bool = Field(default=False)
-    supported_openai_params: List[str] = Field(default=[])
+    supported_openai_params: Optional[List[str]] = Field(default=[])
+    configurable_clientside_auth_params: CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS = None
+
+    def __init__(self, **data):
+        for field_name, field_type in get_type_hints(self.__class__).items():
+            if field_type == bool and data.get(field_name) is None:
+                data[field_name] = False
+        super().__init__(**data)
 
 
 class AssistantsTypedDict(TypedDict):
     custom_llm_provider: Literal["azure", "openai"]
     litellm_params: LiteLLMParamsTypedDict
+
+
+class FineTuningConfig(BaseModel):
+
+    custom_llm_provider: Literal["azure", "openai"]
+
+
+class CustomRoutingStrategyBase:
+    async def async_get_available_deployment(
+        self,
+        model: str,
+        messages: Optional[List[Dict[str, str]]] = None,
+        input: Optional[Union[str, List]] = None,
+        specific_deployment: Optional[bool] = False,
+        request_kwargs: Optional[Dict] = None,
+    ):
+        """
+        Asynchronously retrieves the available deployment based on the given parameters.
+
+        Args:
+            model (str): The name of the model.
+            messages (Optional[List[Dict[str, str]]], optional): The list of messages for a given request. Defaults to None.
+            input (Optional[Union[str, List]], optional): The input for a given embedding request. Defaults to None.
+            specific_deployment (Optional[bool], optional): Whether to retrieve a specific deployment. Defaults to False.
+            request_kwargs (Optional[Dict], optional): Additional request keyword arguments. Defaults to None.
+
+        Returns:
+            Returns an element from litellm.router.model_list
+
+        """
+        pass
+
+    def get_available_deployment(
+        self,
+        model: str,
+        messages: Optional[List[Dict[str, str]]] = None,
+        input: Optional[Union[str, List]] = None,
+        specific_deployment: Optional[bool] = False,
+        request_kwargs: Optional[Dict] = None,
+    ):
+        """
+        Synchronously retrieves the available deployment based on the given parameters.
+
+        Args:
+            model (str): The name of the model.
+            messages (Optional[List[Dict[str, str]]], optional): The list of messages for a given request. Defaults to None.
+            input (Optional[Union[str, List]], optional): The input for a given embedding request. Defaults to None.
+            specific_deployment (Optional[bool], optional): Whether to retrieve a specific deployment. Defaults to False.
+            request_kwargs (Optional[Dict], optional): Additional request keyword arguments. Defaults to None.
+
+        Returns:
+            Returns an element from litellm.router.model_list
+
+        """
+        pass
+
+
+class RouterGeneralSettings(BaseModel):
+    async_only_mode: bool = Field(
+        default=False
+    )  # this will only initialize async clients. Good for memory utils
+    pass_through_all_models: bool = Field(
+        default=False
+    )  # if passed a model not llm_router model list, pass through the request to litellm.acompletion/embedding
+
+
+class RouterRateLimitErrorBasic(ValueError):
+    """
+    Raise a basic error inside helper functions.
+    """
+
+    def __init__(
+        self,
+        model: str,
+    ):
+        self.model = model
+        _message = f"{RouterErrors.no_deployments_available.value}."
+        super().__init__(_message)
+
+
+class RouterRateLimitError(ValueError):
+    def __init__(
+        self,
+        model: str,
+        cooldown_time: float,
+        enable_pre_call_checks: bool,
+        cooldown_list: List,
+    ):
+        self.model = model
+        self.cooldown_time = cooldown_time
+        self.enable_pre_call_checks = enable_pre_call_checks
+        self.cooldown_list = cooldown_list
+        _message = f"{RouterErrors.no_deployments_available.value}, Try again in {cooldown_time} seconds. Passed model={model}. pre-call-checks={enable_pre_call_checks}, cooldown_list={cooldown_list}"
+        super().__init__(_message)
+
+
+class RouterModelGroupAliasItem(TypedDict):
+    model: str
+    hidden: bool  # if 'True', don't return on `.get_model_list`
+
+
+VALID_LITELLM_ENVIRONMENTS = [
+    "development",
+    "staging",
+    "production",
+]
+
+
+class RoutingStrategy(enum.Enum):
+    LEAST_BUSY = "least-busy"
+    LATENCY_BASED = "latency-based-routing"
+    COST_BASED = "cost-based-routing"
+    USAGE_BASED_ROUTING_V2 = "usage-based-routing-v2"
+    USAGE_BASED_ROUTING = "usage-based-routing"
+    PROVIDER_BUDGET_LIMITING = "provider-budget-routing"
+
+
+class RouterCacheEnum(enum.Enum):
+    TPM = "global_router:{id}:{model}:tpm:{current_minute}"
+    RPM = "global_router:{id}:{model}:rpm:{current_minute}"
+
+
+class GenericBudgetWindowDetails(BaseModel):
+    """Details about a provider's budget window"""
+
+    budget_start: float
+    spend_key: str
+    start_time_key: str
+    ttl_seconds: int
+
+
+OptionalPreCallChecks = List[Literal["prompt_caching", "router_budget_limiting"]]

@@ -26,6 +26,19 @@ model LiteLLM_BudgetTable {
   keys LiteLLM_VerificationToken[] // multiple keys can have the same budget
   end_users LiteLLM_EndUserTable[] // multiple end-users can have the same budget
   team_membership LiteLLM_TeamMembership[] // budgets of Users within a Team 
+  organization_membership LiteLLM_OrganizationMembership[] // budgets of Users within a Organization 
+}
+
+// Models on proxy
+model LiteLLM_CredentialsTable {
+  credential_id String @id @default(uuid())
+  credential_name String @unique
+  credential_values Json
+  credential_info Json? 
+  created_at    DateTime               @default(now()) @map("created_at")
+  created_by String
+  updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
+  updated_by String
 }
 
 // Models on proxy
@@ -55,6 +68,8 @@ model LiteLLM_OrganizationTable {
     litellm_budget_table LiteLLM_BudgetTable?   @relation(fields: [budget_id], references: [budget_id])
     teams LiteLLM_TeamTable[] 
     users LiteLLM_UserTable[]
+    keys LiteLLM_VerificationToken[]
+    members LiteLLM_OrganizationMembership[] @relation("OrganizationToMembership")
 }
 
 // Model info for teams, just has model aliases for now.
@@ -91,7 +106,7 @@ model LiteLLM_TeamTable {
     updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
     model_spend      Json @default("{}")
     model_max_budget Json @default("{}")
-    model_id Int? @unique
+    model_id Int? @unique // id for LiteLLM_ModelTable -> stores team-level model aliases
     litellm_organization_table LiteLLM_OrganizationTable?   @relation(fields: [organization_id], references: [organization_id])
     litellm_model_table LiteLLM_ModelTable? @relation(fields: [model_id], references: [id])
 }
@@ -101,6 +116,7 @@ model LiteLLM_UserTable {
 		user_id    String @id
     user_alias String? 
     team_id    String?
+    sso_user_id String? @unique
     organization_id String?
     password  String?
     teams    String[] @default([])
@@ -109,6 +125,7 @@ model LiteLLM_UserTable {
     spend      Float    @default(0.0)
     user_email    String?
     models     String[]
+    metadata  Json  @default("{}")
     max_parallel_requests Int?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
@@ -117,7 +134,12 @@ model LiteLLM_UserTable {
     allowed_cache_controls String[] @default([])
     model_spend      Json @default("{}")
     model_max_budget Json @default("{}")
-    litellm_organization_table LiteLLM_OrganizationTable?   @relation(fields: [organization_id], references: [organization_id])
+    created_at      DateTime?               @default(now()) @map("created_at")
+    updated_at      DateTime?               @default(now()) @updatedAt @map("updated_at")
+
+    // relations
+    litellm_organization_table LiteLLM_OrganizationTable?                   @relation(fields: [organization_id], references: [organization_id])
+    organization_memberships LiteLLM_OrganizationMembership[]
     invitations_created LiteLLM_InvitationLink[] @relation("CreatedBy")
     invitations_updated LiteLLM_InvitationLink[] @relation("UpdatedBy")
     invitations_user    LiteLLM_InvitationLink[] @relation("UserId")
@@ -139,6 +161,7 @@ model LiteLLM_VerificationToken {
     permissions Json @default("{}")
     max_parallel_requests Int?
     metadata   Json  @default("{}")
+    blocked Boolean?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
     max_budget Float?    
@@ -148,7 +171,13 @@ model LiteLLM_VerificationToken {
     model_spend      Json @default("{}")
     model_max_budget Json @default("{}")
     budget_id String?
+    organization_id String?
+    created_at      DateTime?               @default(now()) @map("created_at")
+    created_by String?
+    updated_at      DateTime?               @default(now()) @updatedAt @map("updated_at")
+    updated_by String?
     litellm_budget_table LiteLLM_BudgetTable?   @relation(fields: [budget_id], references: [budget_id])
+    litellm_organization_table LiteLLM_OrganizationTable?   @relation(fields: [organization_id], references: [organization_id])
 }
 
 model LiteLLM_EndUserTable {
@@ -172,7 +201,7 @@ model LiteLLM_Config {
 model LiteLLM_SpendLogs {
   request_id          String @id
   call_type           String
-  api_key             String  @default ("")
+  api_key             String  @default ("") // Hashed API Token. Not the actual Virtual Key. Equivalent to 'token' column in LiteLLM_VerificationToken
   spend               Float    @default(0.0)
   total_tokens        Int     @default(0)
   prompt_tokens       Int     @default(0)
@@ -183,14 +212,20 @@ model LiteLLM_SpendLogs {
   model               String   @default("")
   model_id            String?   @default("") // the model id stored in proxy model db
   model_group         String?   @default("") // public model_name / model_group
-  api_base            String   @default("")
-  user                String   @default("")
-  metadata            Json     @default("{}")
-  cache_hit           String   @default("")
-  cache_key           String   @default("")
-  request_tags        Json     @default("[]")
+  custom_llm_provider String?   @default("") // litellm used custom_llm_provider
+  api_base            String?   @default("")
+  user                String?   @default("")
+  metadata            Json?     @default("{}")
+  cache_hit           String?   @default("")
+  cache_key           String?   @default("")
+  request_tags        Json?     @default("[]")
   team_id             String? 
   end_user            String?
+  requester_ip_address String?
+  messages            Json?     @default("{}")
+  response            Json?     @default("{}")
+  @@index([startTime])
+  @@index([end_user])
 }
 
 // View spend, model, api_key per request
@@ -227,6 +262,27 @@ model LiteLLM_TeamMembership {
   @@id([user_id, team_id])
 }
 
+model LiteLLM_OrganizationMembership {
+  // Use this table to track Internal User and Organization membership. Helps tracking a users role within an Organization
+  user_id         String
+  organization_id String
+  user_role       String?
+  spend           Float?    @default(0.0)
+  budget_id       String?
+  created_at      DateTime?               @default(now()) @map("created_at")
+  updated_at      DateTime?               @default(now()) @updatedAt @map("updated_at")
+
+  // relations
+  user LiteLLM_UserTable @relation(fields: [user_id], references: [user_id])
+  organization LiteLLM_OrganizationTable @relation("OrganizationToMembership", fields: [organization_id], references: [organization_id])
+  litellm_budget_table LiteLLM_BudgetTable?   @relation(fields: [budget_id], references: [budget_id])
+  
+  
+
+  @@id([user_id, organization_id])
+  @@unique([user_id, organization_id])
+}
+
 model LiteLLM_InvitationLink {
   // use this table to track invite links sent by admin for people to join the proxy
   id String   @id @default(uuid())
@@ -247,12 +303,13 @@ model LiteLLM_InvitationLink {
 
 
 model LiteLLM_AuditLog {
-  id           String   @id @default(uuid())
-  updated_at   DateTime @default(now())
-  changed_by   String       // user or system that performed the action
-  action      String        // create, update, delete
-  table_name  String       // on of  LitellmTableNames.TEAM_TABLE_NAME, LitellmTableNames.USER_TABLE_NAME, LitellmTableNames.PROXY_MODEL_TABLE_NAME,
-  object_id    String      // id of the object being audited. This can be the key id, team id, user id, model id
-  before_value Json?       // value of the row 
-  updated_values  Json?       // value of the row after change
+  id                 String   @id @default(uuid())
+  updated_at         DateTime @default(now())
+  changed_by         String   @default("")   // user or system that performed the action
+  changed_by_api_key String   @default("")   // api key hash that performed the action
+  action             String      // create, update, delete
+  table_name         String      // on of  LitellmTableNames.TEAM_TABLE_NAME, LitellmTableNames.USER_TABLE_NAME, LitellmTableNames.PROXY_MODEL_TABLE_NAME,
+  object_id          String      // id of the object being audited. This can be the key id, team id, user id, model id
+  before_value       Json?       // value of the row 
+  updated_values     Json?       // value of the row after change
 }

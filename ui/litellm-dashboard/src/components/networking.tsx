@@ -4,7 +4,12 @@
 import { message } from "antd";
 
 const isLocal = process.env.NODE_ENV === "development";
-const proxyBaseUrl = isLocal ? "http://localhost:4000" : null;
+export const proxyBaseUrl = isLocal ? "http://localhost:4000" : null;
+if (isLocal != true) {
+  console.log = function() {};
+}
+
+export const DEFAULT_ORGANIZATION = "default_organization";
 
 export interface Model {
   model_name: string;
@@ -12,20 +17,102 @@ export interface Model {
   model_info: Object | null;
 }
 
-export const modelCostMap = async () => {
+
+export interface Organization {
+  organization_id: string | null;
+  organization_alias: string;
+  budget_id: string;
+  metadata: Record<string, any>;
+  models: string[];
+  spend: number;
+  model_spend: Record<string, number>;
+  created_at: string;
+  created_by: string;
+  updated_at: string;
+  updated_by: string;
+  litellm_budget_table: any;  // Simplified to any since we don't need the detailed structure
+  teams: any[] | null;
+  users: any[] | null;
+  members: any[] | null;
+}
+
+export interface CredentialItem {
+  credential_name: string;
+  credential_values: object;
+  credential_info: {
+    custom_llm_provider?: string;
+    description?: string;
+    required?: boolean;
+  };
+}
+
+export interface CredentialsResponse {
+  credentials: CredentialItem[];
+}
+
+
+const baseUrl = "/"; // Assuming the base URL is the root
+
+
+let lastErrorTime = 0;
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const handleError = async (errorData: string) => {
+  const currentTime = Date.now();
+  if (currentTime - lastErrorTime > 60000) { // 60000 milliseconds = 60 seconds
+    if (errorData.includes("Authentication Error - Expired Key")) {
+      message.info("UI Session Expired. Logging out.");
+      lastErrorTime = currentTime;
+      await sleep(3000); // 5 second sleep
+      document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      window.location.href = baseUrl;
+    }
+    lastErrorTime = currentTime;
+  } else {
+    console.log("Error suppressed to prevent spam:", errorData);
+  }
+};
+
+
+// Global variable for the header name
+let globalLitellmHeaderName: string  = "Authorization";
+
+// Function to set the global header name
+export function setGlobalLitellmHeaderName(headerName: string = "Authorization") {
+  console.log(`setGlobalLitellmHeaderName: ${headerName}`);
+  globalLitellmHeaderName = headerName;
+}
+
+export const getOpenAPISchema = async () => {
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/openapi.json` : `/openapi.json`;
+  const response = await fetch(url);
+  const jsonData = await response.json();
+  return jsonData;
+}
+
+export const modelCostMap = async (
+  accessToken: string,
+) => {
   try {
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/get/litellm_model_cost_map` : `/get/litellm_model_cost_map`;
     const response = await fetch(
-      "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+      url, {
+        method: "GET",
+        headers: {
+          [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
     );
     const jsonData = await response.json();
-    console.log(`received data: ${jsonData}`);
+    console.log(`received litellm model cost data: ${jsonData}`);
     return jsonData;
   } catch (error) {
     console.error("Failed to get model cost map:", error);
     throw error;
   }
 };
-
 export const modelCreateCall = async (
   accessToken: string,
   formValues: Model
@@ -35,26 +122,32 @@ export const modelCreateCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        ...formValues, // Include formValues in the request body
+        ...formValues,
       }),
     });
 
     if (!response.ok) {
-      const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
-      console.error("Error response from the server:", errorData);
-      throw new Error("Network response was not ok");
+      const errorData = await response.json();
+      const errorMsg =
+        errorData.error?.message?.error ||
+        "Network response was not ok";
+      message.error(errorMsg);
+      throw new Error(errorMsg);
     }
 
     const data = await response.json();
     console.log("API Response:", data);
-    message.success(
-      "Model created successfully. Wait 60s and refresh on 'All Models' page"
-    );
+    
+    // Close any existing messages before showing new ones
+    message.destroy();
+    
+    // Sequential success messages
+    message.success(`Model ${formValues.model_name} created successfully`, 2);
+    
     return data;
   } catch (error) {
     console.error("Failed to create key:", error);
@@ -75,14 +168,14 @@ export const modelSettingsCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -106,7 +199,7 @@ export const modelDeleteCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -116,14 +209,13 @@ export const modelDeleteCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
 
     const data = await response.json();
     console.log("API Response:", data);
-    message.success("Model deleted successfully. Restart server to see this.");
     return data;
   } catch (error) {
     console.error("Failed to create key:", error);
@@ -148,7 +240,7 @@ export const budgetDeleteCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -158,7 +250,7 @@ export const budgetDeleteCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -183,7 +275,7 @@ export const budgetCreateCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -193,7 +285,44 @@ export const budgetCreateCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const budgetUpdateCall = async (
+  accessToken: string,
+  formValues: Record<string, any> // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in budgetUpdateCall:", formValues); // Log the form values before making the API call
+
+    console.log("Form Values after check:", formValues);
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/budget/update` : `/budget/update`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -219,7 +348,7 @@ export const invitationCreateCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -229,7 +358,7 @@ export const invitationCreateCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -258,7 +387,7 @@ export const invitationClaimCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -268,7 +397,7 @@ export const invitationClaimCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -296,14 +425,14 @@ export const alertingSettingsCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -344,7 +473,6 @@ export const keyCreateCall = async (
       try {
         formValues.metadata = JSON.parse(formValues.metadata);
       } catch (error) {
-        message.error("Failed to parse metadata: " + error, 10);
         throw new Error("Failed to parse metadata: " + error);
       }
     }
@@ -354,7 +482,7 @@ export const keyCreateCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -365,9 +493,9 @@ export const keyCreateCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
-      throw new Error("Network response was not ok");
+      throw new Error(errorData);
     }
 
     const data = await response.json();
@@ -407,7 +535,6 @@ export const userCreateCall = async (
       try {
         formValues.metadata = JSON.parse(formValues.metadata);
       } catch (error) {
-        message.error("Failed to parse metadata: " + error, 10);
         throw new Error("Failed to parse metadata: " + error);
       }
     }
@@ -417,7 +544,7 @@ export const userCreateCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -428,9 +555,9 @@ export const userCreateCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
-      throw new Error("Network response was not ok");
+      throw new Error(errorData);
     }
 
     const data = await response.json();
@@ -451,7 +578,7 @@ export const keyDeleteCall = async (accessToken: String, user_key: String) => {
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -461,7 +588,7 @@ export const keyDeleteCall = async (accessToken: String, user_key: String) => {
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to delete key: " + errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -476,6 +603,39 @@ export const keyDeleteCall = async (accessToken: String, user_key: String) => {
   }
 };
 
+export const userDeleteCall = async (accessToken: string, userIds: string[]) => {
+  try {
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/user/delete` : `/user/delete`;
+    console.log("in userDeleteCall:", userIds);
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_ids: userIds,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log(data);
+    //message.success("User(s) Deleted");
+    return data;
+  } catch (error) {
+    console.error("Failed to delete user(s):", error);
+    throw error;
+  }
+};
+
+
 export const teamDeleteCall = async (accessToken: String, teamID: String) => {
   try {
     const url = proxyBaseUrl ? `${proxyBaseUrl}/team/delete` : `/team/delete`;
@@ -483,7 +643,7 @@ export const teamDeleteCall = async (accessToken: String, teamID: String) => {
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -493,7 +653,7 @@ export const teamDeleteCall = async (accessToken: String, teamID: String) => {
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to delete team: " + errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -506,6 +666,66 @@ export const teamDeleteCall = async (accessToken: String, teamID: String) => {
   }
 };
 
+
+export const userListCall = async (
+  accessToken: String, 
+  userIDs: string[] | null = null,
+  page: number | null = null,
+  page_size: number | null = null,
+) => {
+  /**
+   * Get all available teams on proxy
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/list` : `/user/list`;
+    console.log("in userListCall");
+    const queryParams = new URLSearchParams();
+    
+    if (userIDs && userIDs.length > 0) {
+      // Convert array to comma-separated string
+      const userIDsString = userIDs.join(',');
+      queryParams.append('user_ids', userIDsString);
+    }
+    
+    if (page) {
+      queryParams.append('page', page.toString());
+    }
+    
+    if (page_size) {
+      queryParams.append('page_size', page_size.toString());
+    }
+    
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("/user/list API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+
+
 export const userInfoCall = async (
   accessToken: String,
   userID: String | null,
@@ -515,45 +735,45 @@ export const userInfoCall = async (
   page_size: number | null
 ) => {
   try {
-    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/info` : `/user/info`;
-    if (userRole == "App Owner" && userID) {
-      url = `${url}?user_id=${userID}`;
+    let url: string;
+    
+    if (viewAll) {
+      // Use /user/list endpoint when viewAll is true
+      url = proxyBaseUrl ? `${proxyBaseUrl}/user/list` : `/user/list`;
+      const queryParams = new URLSearchParams();
+      if (page != null) queryParams.append('page', page.toString());
+      if (page_size != null) queryParams.append('page_size', page_size.toString());
+      url += `?${queryParams.toString()}`;
+    } else {
+      // Use /user/info endpoint for individual user info
+      url = proxyBaseUrl ? `${proxyBaseUrl}/user/info` : `/user/info`;
+      if (userRole === "Admin" || userRole === "Admin Viewer") {
+        // do nothing 
+      } else if (userID) {
+        url += `?user_id=${userID}`;
+      }
     }
-    if (userRole == "App User" && userID) {
-      url = `${url}?user_id=${userID}`;
-    }
-    if (
-      (userRole == "Internal User" || userRole == "Internal Viewer") &&
-      userID
-    ) {
-      url = `${url}?user_id=${userID}`;
-    }
-    console.log("in userInfoCall viewAll=", viewAll);
-    if (viewAll && page_size && page != null && page != undefined) {
-      url = `${url}?view_all=true&page=${page}&page_size=${page_size}`;
-    }
-    //message.info("Requesting user data");
+
+    console.log("Requesting user data from:", url);
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
     const data = await response.json();
     console.log("API Response:", data);
-    //message.info("Received user data");
     return data;
-    // Handle success - you might want to update some state or UI based on the created key
   } catch (error) {
-    console.error("Failed to create key:", error);
+    console.error("Failed to fetch user data:", error);
     throw error;
   }
 };
@@ -571,14 +791,14 @@ export const teamInfoCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -588,6 +808,264 @@ export const teamInfoCall = async (
     // Handle success - you might want to update some state or UI based on the created key
   } catch (error) {
     console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const teamListCall = async (
+  accessToken: String, 
+  organizationID: string | null,
+  userID: String | null = null,
+) => {
+  /**
+   * Get all available teams on proxy
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/team/list` : `/team/list`;
+    console.log("in teamInfoCall");
+    const queryParams = new URLSearchParams();
+    
+    if (userID) {
+      queryParams.append('user_id', userID.toString());
+    }
+    
+    if (organizationID) {
+      queryParams.append('organization_id', organizationID.toString());
+    }
+    
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("/team/list API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+
+export const availableTeamListCall = async (
+  accessToken: String, 
+) => {
+  /**
+   * Get all available teams on proxy
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/team/available` : `/team/available`;
+    console.log("in availableTeamListCall");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("/team/available_teams API Response:", data);
+    return data;
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const organizationListCall = async (accessToken: String) => {
+  /**
+   * Get all organizations on proxy
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/organization/list` : `/organization/list`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const organizationInfoCall = async (
+  accessToken: String,
+  organizationID: String
+) => {
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/organization/info` : `/organization/info`;
+    if (organizationID) {
+      url = `${url}?organization_id=${organizationID}`;
+    }
+    console.log("in teamInfoCall");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const organizationCreateCall = async (
+  accessToken: string,
+  formValues: Record<string, any> // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in organizationCreateCall:", formValues); // Log the form values before making the API call
+
+    if (formValues.metadata) {
+      console.log("formValues.metadata:", formValues.metadata);
+      // if there's an exception JSON.parse, show it in the message
+      try {
+        formValues.metadata = JSON.parse(formValues.metadata);
+      } catch (error) {
+        console.error("Failed to parse metadata:", error);
+        throw new Error("Failed to parse metadata: " + error);
+      }
+    }
+
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/new` : `/organization/new`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const organizationUpdateCall = async (
+  accessToken: string,
+  formValues: Record<string, any> // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in organizationUpdateCall:", formValues); // Log the form values before making the API call
+
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/update` : `/organization/update`;
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+    const data = await response.json();
+    console.log("Update Team Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+
+export const organizationDeleteCall = async (
+  accessToken: string,
+  organizationID: string
+) => {
+  try {
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/delete` : `/organization/delete`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        organization_ids: [organizationID]
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error(`Error deleting organization: ${errorData}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to delete organization:", error);
     throw error;
   }
 };
@@ -603,14 +1081,14 @@ export const getTotalSpendCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -642,7 +1120,7 @@ export const getOnboardingCredentials = async (inviteUUID: String) => {
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -668,7 +1146,7 @@ export const claimOnboardingToken = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -680,7 +1158,7 @@ export const claimOnboardingToken = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to delete team: " + errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -692,6 +1170,40 @@ export const claimOnboardingToken = async (
     throw error;
   }
 };
+
+export const regenerateKeyCall = async (accessToken: string, keyToRegenerate: string, formData: any) => {
+  try {
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/key/${keyToRegenerate}/regenerate`
+      : `/key/${keyToRegenerate}/regenerate`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(formData),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("Regenerate key Response:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to regenerate key:", error);
+    throw error;
+  }
+};
+
+let ModelListerrorShown = false;
+let errorTimer: NodeJS.Timeout | null = null;
+
 export const modelInfoCall = async (
   accessToken: String,
   userID: String,
@@ -707,14 +1219,27 @@ export const modelInfoCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
-      const errorData = await response.text();
-      message.error(errorData, 10);
+      let errorData = await response.text();
+      errorData += `error shown=${ModelListerrorShown}`
+      if (!ModelListerrorShown) {
+        if (errorData.includes("No model list passed")) {
+          errorData = "No Models Exist. Click Add Model to get started.";
+        }
+        message.info(errorData, 10);
+        ModelListerrorShown = true;
+        
+        if (errorTimer) clearTimeout(errorTimer);
+        errorTimer = setTimeout(() => {
+          ModelListerrorShown = false;
+        }, 10000);
+      }
+
       throw new Error("Network response was not ok");
     }
 
@@ -729,6 +1254,37 @@ export const modelInfoCall = async (
   }
 };
 
+export const modelInfoV1Call = async (accessToken: String, modelId: String) => {
+  /**
+   * Get all models on proxy
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/v1/model/info` : `/v1/model/info`;
+    url += `?litellm_model_id=${modelId}`;
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("modelInfoV1Call:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+
 export const modelHubCall = async (accessToken: String) => {
   /**
    * Get all models on proxy
@@ -742,14 +1298,13 @@ export const modelHubCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
       throw new Error("Network response was not ok");
     }
 
@@ -760,6 +1315,95 @@ export const modelHubCall = async (accessToken: String) => {
     // Handle success - you might want to update some state or UI based on the created key
   } catch (error) {
     console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+// Function to get allowed IPs
+export const getAllowedIPs = async (accessToken: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/get/allowed_ips`
+      : `/get/allowed_ips`;
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error(`Network response was not ok: ${errorData}`);
+    }
+
+    const data = await response.json();
+    console.log("getAllowedIPs:", data);
+    return data.data; // Assuming the API returns { data: [...] }
+  } catch (error) {
+    console.error("Failed to get allowed IPs:", error);
+    throw error;
+  }
+};
+
+// Function to add an allowed IP
+export const addAllowedIP = async (accessToken: String, ip: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/add/allowed_ip`
+      : `/add/allowed_ip`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ip: ip }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error(`Network response was not ok: ${errorData}`);
+    }
+
+    const data = await response.json();
+    console.log("addAllowedIP:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to add allowed IP:", error);
+    throw error;
+  }
+};
+
+// Function to delete an allowed IP
+export const deleteAllowedIP = async (accessToken: String, ip: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/delete/allowed_ip`
+      : `/delete/allowed_ip`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ip: ip }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error(`Network response was not ok: ${errorData}`);
+    }
+
+    const data = await response.json();
+    console.log("deleteAllowedIP:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to delete allowed IP:", error);
     throw error;
   }
 };
@@ -786,14 +1430,14 @@ export const modelMetricsCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -825,14 +1469,14 @@ export const streamingModelMetricsCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -870,14 +1514,14 @@ export const modelMetricsSlowResponsesCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -914,14 +1558,14 @@ export const modelExceptionsCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -937,26 +1581,39 @@ export const modelExceptionsCall = async (
 export const modelAvailableCall = async (
   accessToken: String,
   userID: String,
-  userRole: String
+  userRole: String,
+  return_wildcard_routes: boolean = false,
+  teamID: String | null = null
 ) => {
   /**
    * Get all the models user has access to
    */
+  console.log("in /models calls, globalLitellmHeaderName", globalLitellmHeaderName)
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/models` : `/models`;
+    const params = new URLSearchParams();
+    if (return_wildcard_routes === true) {
+      params.append('return_wildcard_routes', 'True');
+    }
+    if (teamID) {
+      params.append('team_id', teamID.toString());
+    }
+    if (params.toString()) {
+      url += `?${params.toString()}`;
+    }
 
     //message.info("Requesting model data");
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -979,13 +1636,13 @@ export const keySpendLogsCall = async (accessToken: String, token: String) => {
     const response = await fetch(`${url}?api_key=${token}`, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1007,13 +1664,13 @@ export const teamSpendLogsCall = async (accessToken: String) => {
     const response = await fetch(`${url}`, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1050,7 +1707,7 @@ export const tagsSpendLogsCall = async (
     const response = await fetch(`${url}`, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
@@ -1078,7 +1735,7 @@ export const allTagNamesCall = async (accessToken: String) => {
     const response = await fetch(`${url}`, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
@@ -1106,7 +1763,7 @@ export const allEndUsersCall = async (accessToken: String) => {
     const response = await fetch(`${url}`, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
@@ -1123,6 +1780,36 @@ export const allEndUsersCall = async (accessToken: String) => {
     throw error;
   }
 };
+
+export const userFilterUICall = async (accessToken: String, params: URLSearchParams) => {
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/filter/ui` : `/user/filter/ui`;
+
+    if (params.get("user_email")) {
+      url += `?user_email=${params.get("user_email")}`;
+    }
+    if (params.get("user_id")) {
+      url += `?user_id=${params.get("user_id")}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+  return await response.json();
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+}
 
 export const userSpendLogsCall = async (
   accessToken: String,
@@ -1144,13 +1831,13 @@ export const userSpendLogsCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1164,6 +1851,62 @@ export const userSpendLogsCall = async (
   }
 };
 
+export const uiSpendLogsCall = async (
+  accessToken: String,
+  api_key?: string, 
+  team_id?: string,
+  request_id?: string,
+  start_date?: string,
+  end_date?: string,
+  page?: number,
+  page_size?: number,
+  user_id?: string,
+) => {
+  try {
+    // Construct base URL
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/spend/logs/ui` : `/spend/logs/ui`;
+
+    // Add query parameters if they exist
+    const queryParams = new URLSearchParams();
+    if (api_key) queryParams.append('api_key', api_key);
+    if (team_id) queryParams.append('team_id', team_id);
+    if (request_id) queryParams.append('request_id', request_id);
+    if (start_date) queryParams.append('start_date', start_date);
+    if (end_date) queryParams.append('end_date', end_date);
+    if (page) queryParams.append('page', page.toString());
+    if (page_size) queryParams.append('page_size', page_size.toString());
+    if (user_id) queryParams.append('user_id', user_id);
+
+    // Append query parameters to URL if any exist
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("Spend Logs Response:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch spend logs:", error);
+    throw error;
+  }
+};
+
+
 export const adminSpendLogsCall = async (accessToken: String) => {
   try {
     let url = proxyBaseUrl
@@ -1174,13 +1917,13 @@ export const adminSpendLogsCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1204,13 +1947,13 @@ export const adminTopKeysCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1249,27 +1992,20 @@ export const adminTopEndUsersCall = async (
     //message.info("Making top end users request");
 
     // Define requestOptions with body as an optional property
-    const requestOptions: {
-      method: string;
-      headers: {
-        Authorization: string;
-        "Content-Type": string;
-      };
-      body?: string; // The body is optional and might not be present
-    } = {
+    const requestOptions = {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
+      body: body,
     };
 
-    requestOptions.body = body;
 
     const response = await fetch(url, requestOptions);
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1302,15 +2038,10 @@ export const adminspendByProvider = async (
       url += `&api_key=${keyToken}`;
     }
 
-    const requestOptions: {
-      method: string;
-      headers: {
-        Authorization: string;
-      };
-    } = {
+    const requestOptions = {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
       },
     };
 
@@ -1318,7 +2049,7 @@ export const adminspendByProvider = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1345,15 +2076,46 @@ export const adminGlobalActivity = async (
       url += `?start_date=${startTime}&end_date=${endTime}`;
     }
 
-    const requestOptions: {
-      method: string;
-      headers: {
-        Authorization: string;
-      };
-    } = {
+    const requestOptions = {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+      },
+    };
+
+    const response = await fetch(url, requestOptions);
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error("Network response was not ok");
+    }
+    const data = await response.json();
+    console.log(data);
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch spend data:", error);
+    throw error;
+  }
+};
+
+export const adminGlobalCacheActivity = async (
+  accessToken: String,
+  startTime: String | undefined,
+  endTime: String | undefined
+) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/global/activity/cache_hits`
+      : `/global/activity/cache_hits`;
+
+    if (startTime && endTime) {
+      url += `?start_date=${startTime}&end_date=${endTime}`;
+    }
+
+    const requestOptions = {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
       },
     };
 
@@ -1386,15 +2148,10 @@ export const adminGlobalActivityPerModel = async (
       url += `?start_date=${startTime}&end_date=${endTime}`;
     }
 
-    const requestOptions: {
-      method: string;
-      headers: {
-        Authorization: string;
-      };
-    } = {
+    const requestOptions = {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
       },
     };
 
@@ -1432,15 +2189,10 @@ export const adminGlobalActivityExceptions = async (
       url += `&model_group=${modelGroup}`;
     }
 
-    const requestOptions: {
-      method: string;
-      headers: {
-        Authorization: string;
-      };
-    } = {
+    const requestOptions = {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
       },
     };
 
@@ -1478,15 +2230,10 @@ export const adminGlobalActivityExceptionsPerDeployment = async (
       url += `&model_group=${modelGroup}`;
     }
 
-    const requestOptions: {
-      method: string;
-      headers: {
-        Authorization: string;
-      };
-    } = {
+    const requestOptions = {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
       },
     };
 
@@ -1515,13 +2262,13 @@ export const adminTopModelsCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1542,7 +2289,7 @@ export const keyInfoCall = async (accessToken: String, keys: String[]) => {
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1552,13 +2299,164 @@ export const keyInfoCall = async (accessToken: String, keys: String[]) => {
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
     const data = await response.json();
     console.log(data);
     return data;
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+
+export const testConnectionRequest = async (
+  accessToken: string,
+  litellm_params: Record<string, any>,
+  mode: string,
+) => {
+  try {
+    console.log("Sending model connection test request:", JSON.stringify(litellm_params));
+    
+    // Construct the URL based on environment
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/health/test_connection` : `/health/test_connection`;
+        
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`
+      },
+      body: JSON.stringify(
+        {
+          litellm_params: litellm_params,
+          mode: mode,
+        }
+      )
+    });
+
+    // Check for non-JSON responses first
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error("Received non-JSON response:", text);
+      throw new Error(`Received non-JSON response (${response.status}: ${response.statusText}). Check network tab for details.`);
+    }
+
+    const data = await response.json();
+    
+    if (!response.ok || data.status === "error") {
+      // Return the error response instead of throwing an error
+      // This allows the caller to handle the error format properly
+      if (data.status === "error") {
+        return data; // Return the full error response
+      } else {
+        return {
+          status: "error",
+          message: data.error?.message || `Connection test failed: ${response.status} ${response.statusText}`
+        };
+      }
+    }
+
+    return data;
+  } catch (error) {
+    console.error("Model connection test error:", error);
+    // For network errors or other exceptions, still throw
+    throw error;
+  }
+};
+
+// ... existing code ...
+export const keyInfoV1Call = async (accessToken: string, key: string) => {
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/key/info` : `/key/info`;
+    url = `${url}?key=${key}`; // Add key as query parameter
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      // Remove body since this is a GET request
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch key info:", error);
+    throw error;
+  }
+};
+
+
+
+export const keyListCall = async (
+  accessToken: String, 
+  organizationID: string | null,
+  teamID: string | null,
+  page: number,
+  pageSize: number
+) => {
+  /**
+   * Get all available teams on proxy
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/key/list` : `/key/list`;
+    console.log("in keyListCall");
+    const queryParams = new URLSearchParams();
+    
+    if (teamID) {
+      queryParams.append('team_id', teamID.toString());
+    }
+    
+    if (organizationID) {
+      queryParams.append('organization_id', organizationID.toString());
+    }
+
+    if (page) {
+      queryParams.append('page', page.toString());
+    }
+
+    if (pageSize) {
+      queryParams.append('size', pageSize.toString());
+    }
+
+    queryParams.append('return_full_object', 'true');
+    queryParams.append('include_team_keys', 'true');
+    
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("/team/list API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
   } catch (error) {
     console.error("Failed to create key:", error);
     throw error;
@@ -1572,13 +2470,13 @@ export const spendUsersCall = async (accessToken: String, userID: String) => {
     const response = await fetch(`${url}?user_id=${userID}`, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -1604,7 +2502,7 @@ export const userRequestModelCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1616,7 +2514,7 @@ export const userRequestModelCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to delete key: " + errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -1639,14 +2537,14 @@ export const userGetRequesedtModelsCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to delete key: " + errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -1679,14 +2577,14 @@ export const userGetAllUsersCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to delete key: " + errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
     const data = await response.json();
@@ -1708,7 +2606,7 @@ export const getPossibleUserRoles = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
@@ -1732,12 +2630,21 @@ export const teamCreateCall = async (
 ) => {
   try {
     console.log("Form Values in teamCreateCall:", formValues); // Log the form values before making the API call
+    if (formValues.metadata) {
+      console.log("formValues.metadata:", formValues.metadata);
+      // if there's an exception JSON.parse, show it in the message
+      try {
+        formValues.metadata = JSON.parse(formValues.metadata);
+      } catch (error) {
+        throw new Error("Failed to parse metadata: " + error);
+      }
+    }
 
     const url = proxyBaseUrl ? `${proxyBaseUrl}/team/new` : `/team/new`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1747,7 +2654,195 @@ export const teamCreateCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const credentialCreateCall = async (
+  accessToken: string,
+  formValues: Record<string, any> // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in credentialCreateCall:", formValues); // Log the form values before making the API call
+    if (formValues.metadata) {
+      console.log("formValues.metadata:", formValues.metadata);
+      // if there's an exception JSON.parse, show it in the message
+      try {
+        formValues.metadata = JSON.parse(formValues.metadata);
+      } catch (error) {
+        throw new Error("Failed to parse metadata: " + error);
+      }
+    }
+
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/credentials` : `/credentials`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const credentialListCall = async (
+  accessToken: String, 
+) => {
+  /**
+   * Get all available teams on proxy
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/credentials` : `/credentials`;
+    console.log("in credentialListCall");
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("/credentials API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const credentialGetCall = async (accessToken: String, credentialName: String | null, modelId: String | null) => {
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/credentials` : `/credentials`;
+
+    if (credentialName) {
+      url += `/by_name/${credentialName}`;
+    } else if (modelId) {
+      url += `/by_model/${modelId}`;
+    }
+
+    console.log("in credentialListCall");
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("/credentials API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const credentialDeleteCall = async (accessToken: String, credentialName: String) => {
+  try {
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/credentials/${credentialName}` : `/credentials/${credentialName}`;
+    console.log("in credentialDeleteCall:", credentialName);
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+    const data = await response.json();
+    console.log(data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to delete key:", error);
+    throw error;
+  }
+};
+
+export const credentialUpdateCall = async (
+  accessToken: string,
+  credentialName: string,
+  formValues: Record<string, any> // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in credentialUpdateCall:", formValues); // Log the form values before making the API call
+    if (formValues.metadata) {
+      console.log("formValues.metadata:", formValues.metadata);
+      // if there's an exception JSON.parse, show it in the message
+      try {
+        formValues.metadata = JSON.parse(formValues.metadata);
+      } catch (error) {
+        throw new Error("Failed to parse metadata: " + error);
+      }
+    }
+
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/credentials/${credentialName}` : `/credentials/${credentialName}`;
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -1769,11 +2864,30 @@ export const keyUpdateCall = async (
   try {
     console.log("Form Values in keyUpdateCall:", formValues); // Log the form values before making the API call
 
+    if (formValues.model_tpm_limit) {
+      console.log("formValues.model_tpm_limit:", formValues.model_tpm_limit);
+      // if there's an exception JSON.parse, show it in the message
+      try {
+        formValues.model_tpm_limit = JSON.parse(formValues.model_tpm_limit);
+      } catch (error) {
+        throw new Error("Failed to parse model_tpm_limit: " + error);
+      }
+    }
+
+    if (formValues.model_rpm_limit) {
+      console.log("formValues.model_rpm_limit:", formValues.model_rpm_limit);
+      // if there's an exception JSON.parse, show it in the message
+      try {
+        formValues.model_rpm_limit = JSON.parse(formValues.model_rpm_limit);
+      } catch (error) {
+        throw new Error("Failed to parse model_rpm_limit: " + error);
+      }
+    }
     const url = proxyBaseUrl ? `${proxyBaseUrl}/key/update` : `/key/update`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1783,7 +2897,7 @@ export const keyUpdateCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to update key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -1808,7 +2922,7 @@ export const teamUpdateCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1818,7 +2932,7 @@ export const teamUpdateCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to update team: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -1843,7 +2957,7 @@ export const modelUpdateCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1853,7 +2967,7 @@ export const modelUpdateCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to update model: " + errorData, 10);
+      handleError(errorData);
       console.error("Error update from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -1870,7 +2984,7 @@ export const modelUpdateCall = async (
 export interface Member {
   role: string;
   user_id: string | null;
-  user_email: string | null;
+  user_email?: string | null;
 }
 
 export const teamMemberAddCall = async (
@@ -1887,7 +3001,7 @@ export const teamMemberAddCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1898,7 +3012,7 @@ export const teamMemberAddCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -1909,6 +3023,207 @@ export const teamMemberAddCall = async (
     // Handle success - you might want to update some state or UI based on the created key
   } catch (error) {
     console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const teamMemberUpdateCall = async (
+  accessToken: string,
+  teamId: string,
+  formValues: Member // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in teamMemberAddCall:", formValues); // Log the form values before making the API call
+
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/team/member_update`
+      : `/team/member_update`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        team_id: teamId,
+        role: formValues.role,  
+        user_id: formValues.user_id,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+}
+
+export const teamMemberDeleteCall = async (
+  accessToken: string,
+  teamId: string,
+  formValues: Member // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in teamMemberAddCall:", formValues); // Log the form values before making the API call
+
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/team/member_delete`
+      : `/team/member_delete`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        team_id: teamId,
+        ...(formValues.user_email !== undefined && { user_email: formValues.user_email }),
+        ...(formValues.user_id !== undefined && { user_id: formValues.user_id })
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+}
+
+export const organizationMemberAddCall = async (
+  accessToken: string,
+  organizationId: string,
+  formValues: Member // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in teamMemberAddCall:", formValues); // Log the form values before making the API call
+
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/organization/member_add`
+      : `/organization/member_add`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        organization_id: organizationId,
+        member: formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error(errorData);
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create organization member:", error);
+    throw error;
+  }
+};
+
+export const organizationMemberDeleteCall = async (
+  accessToken: string,
+  organizationId: string,
+  userId: string
+) => {
+  try {
+    console.log("Form Values in organizationMemberDeleteCall:", userId); // Log the form values before making the API call
+
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/organization/member_delete`
+      : `/organization/member_delete`;
+
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        organization_id: organizationId,
+        user_id: userId
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to delete organization member:", error);
+    throw error;
+  }
+};
+export const organizationMemberUpdateCall = async (
+  accessToken: string,
+  organizationId: string,
+  formValues: Member // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in organizationMemberUpdateCall:", formValues); // Log the form values before making the API call
+
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/organization/member_update`
+      : `/organization/member_update`;
+
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        organization_id: organizationId,
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to update organization member:", error);
     throw error;
   }
 };
@@ -1930,7 +3245,7 @@ export const userUpdateUserCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: response_body,
@@ -1938,7 +3253,7 @@ export const userUpdateUserCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed to create key: " + errorData, 10);
+      handleError(errorData);
       console.error("Error response from the server:", errorData);
       throw new Error("Network response was not ok");
     }
@@ -1968,7 +3283,7 @@ export const PredictedSpendLogsCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -1978,7 +3293,7 @@ export const PredictedSpendLogsCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2004,14 +3319,14 @@ export const slackBudgetAlertsHealthCheck = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error("Failed Slack Alert test: " + errorData);
+      handleError(errorData);
       // throw error with message
       throw new Error(errorData);
     }
@@ -2043,14 +3358,14 @@ export const serviceHealthCheck = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(`Failed ${service} service health check ` + errorData);
+      handleError(errorData);
       // throw error with message
       throw new Error(errorData);
     }
@@ -2078,14 +3393,14 @@ export const getBudgetList = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2111,14 +3426,14 @@ export const getBudgetSettings = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2149,14 +3464,14 @@ export const getCallbacksCall = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2180,14 +3495,46 @@ export const getGeneralSettingsCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    //message.info("Received model data");
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to get callbacks:", error);
+    throw error;
+  }
+};
+
+
+export const getPassThroughEndpointsCall = async (accessToken: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/config/pass_through_endpoint`
+      : `/config/pass_through_endpoint`;
+
+    //message.info("Requesting model data");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2214,7 +3561,7 @@ export const getConfigFieldSetting = async (
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
@@ -2225,6 +3572,85 @@ export const getConfigFieldSetting = async (
     }
 
     const data = await response.json();
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to set callbacks:", error);
+    throw error;
+  }
+};
+
+export const updatePassThroughFieldSetting = async (
+  accessToken: String,
+  fieldName: string,
+  fieldValue: any
+) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/config/pass_through_endpoint`
+      : `/config/pass_through_endpoint`;
+
+    let formData = {
+      field_name: fieldName,
+      field_value: fieldValue,
+    };
+    //message.info("Requesting model data");
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(formData),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    //message.info("Received model data");
+    message.success("Successfully updated value!");
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to set callbacks:", error);
+    throw error;
+  }
+};
+
+export const createPassThroughEndpoint = async (
+  accessToken: String,
+  formValues: Record<string, any>
+) => {
+  /**
+   * Set callbacks on proxy
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/config/pass_through_endpoint` : `/config/pass_through_endpoint`;
+
+    //message.info("Requesting model data");
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    //message.info("Received model data");
     return data;
     // Handle success - you might want to update some state or UI based on the created key
   } catch (error) {
@@ -2252,7 +3678,7 @@ export const updateConfigFieldSetting = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(formData),
@@ -2260,7 +3686,7 @@ export const updateConfigFieldSetting = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2292,7 +3718,7 @@ export const deleteConfigFieldSetting = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(formData),
@@ -2300,7 +3726,7 @@ export const deleteConfigFieldSetting = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2313,6 +3739,38 @@ export const deleteConfigFieldSetting = async (
     throw error;
   }
 };
+
+export const deletePassThroughEndpointsCall = async (accessToken: String, endpointId: string) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/config/pass_through_endpoint?endpoint_id=${endpointId}`
+      : `/config/pass_through_endpoint${endpointId}`;
+
+    //message.info("Requesting model data");
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    //message.info("Received model data");
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to get callbacks:", error);
+    throw error;
+  }
+};
+
 export const setCallbacksCall = async (
   accessToken: String,
   formValues: Record<string, any>
@@ -2327,7 +3785,7 @@ export const setCallbacksCall = async (
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -2337,7 +3795,7 @@ export const setCallbacksCall = async (
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData, 10);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2362,14 +3820,14 @@ export const healthCheckCall = async (accessToken: String) => {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok) {
       const errorData = await response.text();
-      message.error(errorData);
+      handleError(errorData);
       throw new Error("Network response was not ok");
     }
 
@@ -2382,3 +3840,137 @@ export const healthCheckCall = async (accessToken: String) => {
     throw error;
   }
 };
+
+export const cachingHealthCheckCall = async (accessToken: String) => {
+  /**
+   * Get all the models user has access to
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/cache/ping` : `/cache/ping`;
+
+    //message.info("Requesting model data");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error(errorData);
+    }
+
+    const data = await response.json();
+    //message.info("Received model data");
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to call /cache/ping:", error);
+    throw error;
+  }
+};
+
+export const getProxyUISettings = async (
+  accessToken: String,
+) => {
+  /**
+   * Get all the models user has access to
+   */
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/sso/get/ui_settings`
+      : `/sso/get/ui_settings`;
+
+    //message.info("Requesting model data");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    //message.info("Received model data");
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to get callbacks:", error);
+    throw error;
+  }
+};
+
+
+
+export const getGuardrailsList = async (accessToken: String) => {
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/guardrails/list` : `/guardrails/list`;
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("Guardrails list response:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch guardrails list:", error);
+    throw error;
+  }
+};
+
+
+export const uiSpendLogDetailsCall = async (
+  accessToken: string,
+  logId: string,
+  start_date: string
+) => {
+  try {
+    // Construct base URL
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/spend/logs/ui/${logId}?start_date=${encodeURIComponent(start_date)}`
+      : `/spend/logs/ui/${logId}?start_date=${encodeURIComponent(start_date)}`;
+
+    console.log("Fetching log details from:", url);
+    
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("Fetched log details:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch log details:", error);
+    throw error;
+  }
+};
+

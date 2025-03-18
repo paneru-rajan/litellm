@@ -1,6 +1,15 @@
+# Sentry - Log LLM Exceptions
 import Image from '@theme/IdealImage';
 
-# Sentry - Log LLM Exceptions
+
+:::tip
+
+This is community maintained, Please make an issue if you run into a bug
+https://github.com/BerriAI/litellm
+
+:::
+
+
 [Sentry](https://sentry.io/) provides error monitoring for production. LiteLLM can add breadcrumbs and send exceptions to Sentry with this integration
 
 Track exceptions for:

@@ -1,10 +1,11 @@
 import Image from '@theme/IdealImage';
 
-# ✨ 📧 Email Notifications 
+# Email Notifications 
 
 Send an Email to your users when:
 - A Proxy API Key is created for them 
 - Their API Key crosses it's Budget 
+- All Team members of a LiteLLM Team -> when the team crosses it's budget
 
 <Image img={require('../../img/email_notifs.png')} style={{ width: '500px' }}/>
 

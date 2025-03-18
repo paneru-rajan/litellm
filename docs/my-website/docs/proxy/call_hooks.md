@@ -41,12 +41,16 @@ class MyCustomHandler(CustomLogger): # https://docs.litellm.ai/docs/observabilit
         return data 
 
     async def async_post_call_failure_hook(
-        self, original_exception: Exception, user_api_key_dict: UserAPIKeyAuth
+        self, 
+        request_data: dict,
+        original_exception: Exception, 
+        user_api_key_dict: UserAPIKeyAuth
     ):
         pass
 
     async def async_post_call_success_hook(
         self,
+        data: dict,
         user_api_key_dict: UserAPIKeyAuth,
         response,
     ):
@@ -56,7 +60,7 @@ class MyCustomHandler(CustomLogger): # https://docs.litellm.ai/docs/observabilit
         self,
         data: dict,
         user_api_key_dict: UserAPIKeyAuth,
-        call_type: Literal["completion", "embeddings", "image_generation"],
+        call_type: Literal["completion", "embeddings", "image_generation", "moderation", "audio_transcription"],
     ):
         pass
 
@@ -135,9 +139,6 @@ class MyCustomHandler(CustomLogger): # https://docs.litellm.ai/docs/observabilit
 
     #### ASYNC #### 
     
-    async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
-        pass
-
     async def async_log_pre_api_call(self, model, messages, kwargs):
         pass
 

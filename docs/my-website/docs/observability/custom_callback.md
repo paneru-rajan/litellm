@@ -20,9 +20,7 @@ class MyCustomHandler(CustomLogger):
     def log_post_api_call(self, kwargs, response_obj, start_time, end_time): 
         print(f"Post-API Call")
     
-    def log_stream_event(self, kwargs, response_obj, start_time, end_time):
-        print(f"On Stream")
-        
+
     def log_success_event(self, kwargs, response_obj, start_time, end_time): 
         print(f"On Success")
 
@@ -30,15 +28,12 @@ class MyCustomHandler(CustomLogger):
         print(f"On Failure")
     
     #### ASYNC #### - for acompletion/aembeddings
-    
-    async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
-        print(f"On Async Streaming")
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         print(f"On Async Success")
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        print(f"On Async Success")
+        print(f"On Async Failure")
 
 customHandler = MyCustomHandler()
 
@@ -127,8 +122,7 @@ from litellm import acompletion
 class MyCustomHandler(CustomLogger):
     #### ASYNC #### 
     
-    async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
-        print(f"On Async Streaming")
+
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         print(f"On Async Success")

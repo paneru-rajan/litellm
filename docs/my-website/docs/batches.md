@@ -1,23 +1,78 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Batches API
+# /batches
 
 Covers Batches, Files
 
+| Feature | Supported | Notes | 
+|-------|-------|-------|
+| Supported Providers | OpenAI, Azure, Vertex | - |
+| ✨ Cost Tracking | ✅ | LiteLLM Enterprise only |
+| Logging | ✅ | Works across all logging integrations |
 
 ## Quick Start 
-
-Call an existing Assistant. 
 
 - Create File for Batch Completion
 
 - Create Batch Request
 
+- List Batches
+
 - Retrieve the Specific Batch and File Content
 
 
 <Tabs>
+<TabItem value="proxy" label="LiteLLM PROXY Server">
+
+```bash
+$ export OPENAI_API_KEY="sk-..."
+
+$ litellm
+
+# RUNNING on http://0.0.0.0:4000
+```
+
+**Create File for Batch Completion**
+
+```shell
+curl http://localhost:4000/v1/files \
+    -H "Authorization: Bearer sk-1234" \
+    -F purpose="batch" \
+    -F file="@mydata.jsonl"
+```
+
+**Create Batch Request**
+
+```bash
+curl http://localhost:4000/v1/batches \
+        -H "Authorization: Bearer sk-1234" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "input_file_id": "file-abc123",
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h"
+    }'
+```
+
+**Retrieve the Specific Batch**
+
+```bash
+curl http://localhost:4000/v1/batches/batch_abc123 \
+    -H "Authorization: Bearer sk-1234" \
+    -H "Content-Type: application/json" \
+```
+
+
+**List Batches**
+
+```bash
+curl http://localhost:4000/v1/batches \
+    -H "Authorization: Bearer sk-1234" \
+    -H "Content-Type: application/json" \
+```
+
+</TabItem>
 <TabItem value="sdk" label="SDK">
 
 **Create File for Batch Completion**
@@ -77,48 +132,41 @@ file_content = await litellm.afile_content(
 print("file content = ", file_content)
 ```
 
-</TabItem>
-<TabItem value="proxy" label="PROXY">
+**List Batches**
 
-```bash
-$ export OPENAI_API_KEY="sk-..."
-
-$ litellm
-
-# RUNNING on http://0.0.0.0:4000
-```
-
-**Create File for Batch Completion**
-
-```shell
-curl https://api.openai.com/v1/files \
-    -H "Authorization: Bearer sk-1234" \
-    -F purpose="batch" \
-    -F file="@mydata.jsonl"
-```
-
-**Create Batch Request**
-
-```bash
-curl http://localhost:4000/v1/batches \
-        -H "Authorization: Bearer sk-1234" \
-        -H "Content-Type: application/json" \
-        -d '{
-            "input_file_id": "file-abc123",
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h"
-    }'
-```
-
-**Retrieve the Specific Batch**
-
-```bash
-curl http://localhost:4000/v1/batches/batch_abc123 \
-    -H "Authorization: Bearer sk-1234" \
-    -H "Content-Type: application/json" \
+```python
+list_batches_response = litellm.list_batches(custom_llm_provider="openai", limit=2)
+print("list_batches_response=", list_batches_response)
 ```
 
 </TabItem>
+
 </Tabs>
 
-## [👉 Proxy API Reference](https://litellm-api.up.railway.app/#/batch)
+
+## **Supported Providers**:
+### [Azure OpenAI](./providers/azure#azure-batches-api)
+### [OpenAI](#quick-start)
+### [Vertex AI](./providers/vertex#batch-apis)
+
+
+## How Cost Tracking for Batches API Works
+
+LiteLLM tracks batch processing costs by logging two key events:
+
+| Event Type | Description | When it's Logged |
+|------------|-------------|------------------|
+| `acreate_batch` | Initial batch creation | When batch request is submitted |
+| `batch_success` | Final usage and cost | When batch processing completes |
+
+Cost calculation:
+
+- LiteLLM polls the batch status until completion
+- Upon completion, it aggregates usage and costs from all responses in the output file
+- Total `token` and `response_cost` reflect the combined metrics across all batch responses
+
+
+
+
+
+## [Swagger API Reference](https://litellm-api.up.railway.app/#/batch)
